@@ -46,9 +46,9 @@ public class MessageStore {
         Log.v(TAG, "insert Key: " + key + " val: " + val);
     }
 
-    public List<Map.Entry<String, String>> query(String key, String nodePort, String nodeId) {
+    public List<Map.Entry<String, String>> query(String key) {
         List<Map.Entry<String, String>> resultList = new ArrayList<Map.Entry<String, String>>();
-        Cursor resultCursor = mContentResolver.query(mUri, null, key, new String[]{nodePort, nodeId}, null);
+        Cursor resultCursor = mContentResolver.query(mUri, null, key, null, null);
         if (resultCursor == null) {
            Log.v(TAG, "query key " + key + " not found");
         } else {

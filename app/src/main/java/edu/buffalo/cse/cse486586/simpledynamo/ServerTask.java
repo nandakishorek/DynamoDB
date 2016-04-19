@@ -56,11 +56,15 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
                             break;
                         case REPL_READ:
                             handle_repl_read(msg.getKey(), bw);
+                            break;
                         case DEL:
                             mProvider.deleteLocal(msg.getKey());
                             break;
                         case WRITE:
                             mStore.insert(msg.getKey(), msg.getValue());
+                            break;
+                        case READ:
+                            handle_read(msg.getKey(), bw);
                             break;
                         default:
                             Log.e(TAG, "invalid message " + msg);
@@ -94,6 +98,22 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
             bw.write('\n');
             bw.flush();
             Log.v(TAG, "handle_repl_read: sent message " + line);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void handle_read(String key, BufferedWriter bw) {
+        List<Map.Entry<String, String>> result =  mStore.query(key);
+
+        Log.v(TAG, "handle_read: after result " + result.get(0).getValue());
+        try {
+            Message msg = new Message(Message.Type.READ, key, result.get(0).getValue(), 0);
+            String line = msg.toString();
+            bw.write(line);
+            bw.write('\n');
+            bw.flush();
+            Log.v(TAG, "handle_read: sent message " + line);
         } catch (IOException e) {
             e.printStackTrace();
         }

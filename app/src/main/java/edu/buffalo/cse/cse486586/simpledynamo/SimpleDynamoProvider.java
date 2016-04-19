@@ -50,6 +50,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     private int coOrdPort;
 
     private Cursor mCursor; // will hold the query result from the successor
+    private Message mResult;
     private ConditionVariable mQueryDoneCV = new ConditionVariable(false);
 
     @Override
@@ -138,7 +139,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             Message message = new Message(Message.Type.DEL, selection, null, 0);
             new DeleteAllTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
         } else {
-            forward(selection, null, coOrdPort);
+            forward(Message.Type.DEL, selection, null, coOrdPort);
         }
 
 		return 0;
@@ -175,7 +176,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         coOrdPort = getCoOrdinator(key);
         if (coOrdPort != mPort) {
             // send it to the right node
-            forward(key, val, coOrdPort);
+            forward(Message.Type.WRITE, key, val, coOrdPort);
         } else {
             // store locally
             insertLocal(key, val);
@@ -204,8 +205,10 @@ public class SimpleDynamoProvider extends ContentProvider {
         try (FileOutputStream fos = getContext().openFileOutput(key, Context.MODE_PRIVATE)) {
             fos.write(val.getBytes());
             fos.write('\n');
-            fos.write(++version);
+            ++version;
+            fos.write(Integer.toString(version).getBytes());
             fos.write('\n');
+            fos.flush();
         } catch (FileNotFoundException fnf) {
             Log.e(TAG, "File not found - " + key);
         } catch (IOException ioe) {
@@ -226,8 +229,8 @@ public class SimpleDynamoProvider extends ContentProvider {
      * @param val
      * @param coOrdPort
      */
-    private void forward(String key, String val, int coOrdPort) {
-        Message message = new Message(Message.Type.WRITE, key, val, 0);
+    private void forward(Message.Type type, String key, String val, int coOrdPort) {
+        Message message = new Message(type, key, val, 0);
         new ForwardTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
     }
 
@@ -239,11 +242,24 @@ public class SimpleDynamoProvider extends ContentProvider {
         } else if ("*".equals(selection)) {
             return queryAll();
         } else {
-            querySuccessors(selection);
-            mQueryDoneCV.block();
-            mQueryDoneCV.close();
+            coOrdPort = getCoOrdinator(selection);
+            if (coOrdPort != mPort) {
+                mQueryDoneCV.close();
+
+                // send it to the right node
+                forward(Message.Type.READ, selection, null, coOrdPort);
+
+                mQueryDoneCV.block();
+                mQueryDoneCV.close();
+
+                MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
+                cursor.addRow(new String[]{mResult.getKey(), mResult.getValue()});
+                return cursor;
+            } else {
+                querySuccessors(selection);
+                return mCursor;
+            }
         }
-		return mCursor;
 	}
 
     private Cursor queryAllLocal() {
@@ -288,6 +304,7 @@ public class SimpleDynamoProvider extends ContentProvider {
     private void querySuccessors(String key){
         String[] result = queryLocal(key);
         Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
+        mQueryDoneCV.close();
         new QueryTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
         mQueryDoneCV.block();
         mQueryDoneCV.close();
@@ -317,10 +334,21 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String msgToSend = message.toString();
                 bw.write(msgToSend + "\n");
                 bw.flush();
-                Log.v(TAG, "forwarded " + msgToSend);
+                Log.v(TAG, "forwarded " + msgToSend + " to " + coOrdPort);
 
                 // TODO : if the coordinator does not ACK, then send it to the node after that
                 //mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(coOrdPort/2)));
+
+                String line = br.readLine();
+                Log.v(TAG, "ForwardTask received " + line);
+                if (line != null && line.length() > 1) {
+                    mResult = new Message(line);
+                }
+
+                // notify the main thread
+                mQueryDoneCV.open();
+                Log.v(TAG, "notified the main thread");
+
             } catch (IOException ioe) {
                 Log.e(TAG, "Error forwarding");
                 ioe.printStackTrace();
