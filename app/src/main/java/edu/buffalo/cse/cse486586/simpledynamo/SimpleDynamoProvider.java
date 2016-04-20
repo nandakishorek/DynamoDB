@@ -145,7 +145,14 @@ public class SimpleDynamoProvider extends ContentProvider {
             Message message = new Message(Message.Type.DEL, selection, null, 0, coOrdPort);
             new DeleteTask().executeOnExecutor(mExecutor, message);
         } else {
-            forward(Message.Type.DEL, selection, null, coOrdPort);
+            Message message = new Message(Message.Type.DEL, selection, null, 0, mPort);
+            try {
+                new ForwardTask().executeOnExecutor(mExecutor, message).get();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
         }
 
 		return 0;
@@ -182,7 +189,14 @@ public class SimpleDynamoProvider extends ContentProvider {
         int coOrdPort = getCoOrdinator(key);
         if (coOrdPort != mPort) {
             // send it to the right node
-            forward(Message.Type.WRITE, key, val, coOrdPort);
+            Message message = new Message(Message.Type.WRITE, key, val, 0, coOrdPort);
+            try {
+                new ForwardTask().executeOnExecutor(mExecutor, message).get();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
         } else {
             // store locally
             insertLocal(key, val);
@@ -232,17 +246,6 @@ public class SimpleDynamoProvider extends ContentProvider {
         } catch (ExecutionException e) {
             e.printStackTrace();
         }
-    }
-
-    /**
-     * Forward to the right coordinator
-     *
-     * @param key the key
-     * @param val the value
-     */
-    private void forward(Message.Type type, String key, String val, int port) {
-        Message message = new Message(type, key, val, 0, port);
-        new ForwardTask().executeOnExecutor(mExecutor, message);
     }
 
 	@Override
@@ -397,14 +400,15 @@ public class SimpleDynamoProvider extends ContentProvider {
                 // TODO : if the coordinator does not ACK, then send it to the node after that
                 //mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(coOrdPort/2)));
 
-                String line = br.readLine();
-                Log.v(TAG, "ForwardTask received " + line);
-                if (line != null && line.length() > 1) {
-                    Message msg = new Message(line);
-                    message.setKey(msg.getKey());
-                    message.setValue(msg.getValue());
+                if (message.getType() == Message.Type.READ) {
+                    String line = br.readLine();
+                    Log.v(TAG, "ForwardTask received " + line);
+                    if (line != null && line.length() > 1) {
+                        Message msg = new Message(line);
+                        message.setKey(msg.getKey());
+                        message.setValue(msg.getValue());
+                    }
                 }
-
             } catch (IOException ioe) {
                 Log.e(TAG, "Error forwarding");
                 ioe.printStackTrace();

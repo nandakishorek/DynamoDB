@@ -40,41 +40,46 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         ServerSocket serverSocket = sockets[0];
         while (!isCancelled()) {
             try {
-                Socket clientSocket = serverSocket.accept();
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()))
-                ) {
-                    String line = br.readLine();
-                    Log.v(TAG, "received message " + line);
-                    Message msg = new Message(line);
+                final Socket clientSocket = serverSocket.accept();
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try (BufferedReader br = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+                             BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()))
+                        ) {
+                            String line = br.readLine();
+                            Log.v(TAG, "received message " + line);
+                            Message msg = new Message(line);
 
-                    switch (msg.getType()) {
-                        case REPL_WRITE:
-                            mProvider.insertLocal(msg.getKey(), msg.getValue());
-                            break;
-                        case REPL_READ:
-                            handle_repl_read(msg.getKey(), bw);
-                            break;
-                        case DEL:
-                            mProvider.deleteLocal(msg.getKey());
-                            break;
-                        case WRITE:
-                            mStore.insert(msg.getKey(), msg.getValue());
-                            break;
-                        case READ:
-                            handle_read(msg.getKey(), bw);
-                            break;
-                        case READ_ALL:
-                            handle_read_all(bw);
-                            break;
-                        default:
-                            Log.e(TAG, "invalid message " + msg);
-                            break;
+                            switch (msg.getType()) {
+                                case REPL_WRITE:
+                                    mProvider.insertLocal(msg.getKey(), msg.getValue());
+                                    break;
+                                case REPL_READ:
+                                    handle_repl_read(msg.getKey(), bw);
+                                    break;
+                                case DEL:
+                                    mProvider.deleteLocal(msg.getKey());
+                                    break;
+                                case WRITE:
+                                    mStore.insert(msg.getKey(), msg.getValue());
+                                    break;
+                                case READ:
+                                    handle_read(msg.getKey(), bw);
+                                    break;
+                                case READ_ALL:
+                                    handle_read_all(bw);
+                                    break;
+                                default:
+                                    Log.e(TAG, "invalid message " + msg);
+                                    break;
+                            }
+                        } catch (IOException ioe) {
+                            Log.e(TAG, "Error writing or reading to client socket");
+                            ioe.printStackTrace();
+                        }
                     }
-                } catch (IOException ioe) {
-                    Log.e(TAG, "Error writing or reading to client socket");
-                    ioe.printStackTrace();
-                }
+                }).start();
             } catch (IOException e) {
                 e.printStackTrace();
                 Log.e(TAG, "Error while accepting the client connection");
