@@ -20,13 +20,16 @@ public class Message {
     private String value;
     private int version; //value version
 
+    private int mPort;
+
     private List<Map.Entry<String, String>> result = new ArrayList<Map.Entry<String, String>>(); // query result
 
-    public Message(Type type, String key, String val, int ver) {
+    public Message(Type type, String key, String val, int ver, int port) {
         this.type = type;
         this.key = key;
         this.value = val;
         this.version = ver;
+        this.mPort = port;
     }
 
     public Message(String msg) {
@@ -71,6 +74,14 @@ public class Message {
 
     public void setResult(List<Map.Entry<String, String>> result) {
         this.result = result;
+    }
+
+    public int getmPort() {
+        return mPort;
+    }
+
+    public void setmPort(int mPort) {
+        this.mPort = mPort;
     }
 
     /**

@@ -93,7 +93,7 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
     private void handle_repl_read(String key, BufferedWriter bw) {
         String[] result = mProvider.queryLocal(key);
         if (result != null) {
-            Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
+            Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]), mPort);
             try {
                 String line = message.toString();
                 bw.write(line);
@@ -111,21 +111,25 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
     private void handle_read(String key, BufferedWriter bw) {
         List<Map.Entry<String, String>> result =  mStore.query(key);
 
-        Log.v(TAG, "handle_read: after result " + result.get(0).getValue());
-        try {
-            Message msg = new Message(Message.Type.READ, key, result.get(0).getValue(), 0);
-            String line = msg.toString();
-            bw.write(line);
-            bw.write('\n');
-            bw.flush();
-            Log.v(TAG, "handle_read: sent message " + line);
-        } catch (IOException e) {
-            e.printStackTrace();
+        if (result != null && result.size() > 0) {
+            Log.v(TAG, "handle_read: after result " + result.get(0).getValue());
+            try {
+                Message msg = new Message(Message.Type.READ, key, result.get(0).getValue(), 0, mPort);
+                String line = msg.toString();
+                bw.write(line);
+                bw.write('\n');
+                bw.flush();
+                Log.v(TAG, "handle_read: sent message " + line);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            Log.v(TAG, "handle_read: key " + key + " not found");
         }
     }
 
     private void handle_read_all(BufferedWriter bw) {
-        Message respMsg = new Message(Message.Type.READ_ALL, "*", null, 0);
+        Message respMsg = new Message(Message.Type.READ_ALL, "*", null, 0, mPort);
         respMsg.setResult(mProvider.queryAllWithVersion());
         String line = respMsg.toString();
         try {

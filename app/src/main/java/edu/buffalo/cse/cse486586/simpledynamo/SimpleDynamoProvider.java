@@ -18,6 +18,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
@@ -48,11 +52,8 @@ public class SimpleDynamoProvider extends ContentProvider {
 	private String mNodeId; // hash of the emulator port, ex. hash("5554");
 	private ServerTask mServerTask;
     private List<Integer> preflist;
-    private int coOrdPort;
 
-    private Cursor mCursor; // will hold the query result from the successor
-    private Message mResult;
-    private ConditionVariable mQueryDoneCV = new ConditionVariable(false);
+    Executor mExecutor = Executors.newFixedThreadPool(20);
 
     @Override
     public boolean onCreate() {
@@ -73,7 +74,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         // start the server thread
         try {
-            ServerSocket serverSocket = new ServerSocket(SERVER_PORT, 5);
+            ServerSocket serverSocket = new ServerSocket(SERVER_PORT, 10);
             mServerTask = new ServerTask(mPort, mNodeId, this, getContext().getContentResolver());
             mServerTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, serverSocket);
         } catch (IOException e) {
@@ -131,26 +132,26 @@ public class SimpleDynamoProvider extends ContentProvider {
 
 	@Override
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
-        coOrdPort = getCoOrdinator(selection);
+        int coOrdPort = getCoOrdinator(selection);
 
         if("@".equals(selection)) {
             deleteLocal(selection);
         } else if ("*".equals(selection)) {
             deleteLocal(selection);
-            Message message = new Message(Message.Type.DEL, selection, null, 0);
-            new DeleteAllTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+            Message message = new Message(Message.Type.DEL, selection, null, 0, coOrdPort);
+            new DeleteAllTask().executeOnExecutor(mExecutor, message);
         } else if (coOrdPort == mPort){
             deleteLocal(selection);
-            Message message = new Message(Message.Type.DEL, selection, null, 0);
-            new DeleteTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+            Message message = new Message(Message.Type.DEL, selection, null, 0, coOrdPort);
+            new DeleteTask().executeOnExecutor(mExecutor, message);
         } else {
-            forward(Message.Type.DEL, selection, null);
+            forward(Message.Type.DEL, selection, null, coOrdPort);
         }
 
 		return 0;
 	}
 
-    public synchronized int deleteLocal(String key) {
+    public int deleteLocal(String key) {
         if (key.equals("*") || key.equals("@")) {
             // delete everything
             String[] allKeys = getContext().fileList();
@@ -178,10 +179,10 @@ public class SimpleDynamoProvider extends ContentProvider {
         String key = (String) values.get(KEY_FIELD);
         String val = (String) values.get(VALUE_FIELD);
 
-        coOrdPort = getCoOrdinator(key);
+        int coOrdPort = getCoOrdinator(key);
         if (coOrdPort != mPort) {
             // send it to the right node
-            forward(Message.Type.WRITE, key, val);
+            forward(Message.Type.WRITE, key, val, coOrdPort);
         } else {
             // store locally
             insertLocal(key, val);
@@ -193,7 +194,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 		return uri;
 	}
 
-    public synchronized void insertLocal(String key, String val) {
+    public void insertLocal(String key, String val) {
         int version = 0;
 
         // read the current version
@@ -223,8 +224,14 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private void replicate(String key, String val) {
-        Message message = new Message(Message.Type.REPL_WRITE, key, val, 0);
-        new ReplicationTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+        Message message = new Message(Message.Type.REPL_WRITE, key, val, 0, mPort);
+        try {
+            new ReplicationTask().executeOnExecutor(mExecutor, message).get();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -233,9 +240,9 @@ public class SimpleDynamoProvider extends ContentProvider {
      * @param key the key
      * @param val the value
      */
-    private void forward(Message.Type type, String key, String val) {
-        Message message = new Message(type, key, val, 0);
-        new ForwardTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+    private void forward(Message.Type type, String key, String val, int port) {
+        Message message = new Message(type, key, val, 0, port);
+        new ForwardTask().executeOnExecutor(mExecutor, message);
     }
 
 	@Override
@@ -246,22 +253,26 @@ public class SimpleDynamoProvider extends ContentProvider {
         } else if ("*".equals(selection)) {
             return queryAll();
         } else {
-            coOrdPort = getCoOrdinator(selection);
+            int coOrdPort = getCoOrdinator(selection);
             if (coOrdPort != mPort) {
-                mQueryDoneCV.close();
+                Log.v(TAG, "forwarding " + selection + " to co-ordinator " + coOrdPort);
 
                 // send it to the right node
-                forward(Message.Type.READ, selection, null);
+                Message message = new Message(Message.Type.READ, selection, null, 0, coOrdPort);
+                try {
+                    new ForwardTask().executeOnExecutor(mExecutor, message).get();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                } catch (ExecutionException e) {
+                    e.printStackTrace();
+                }
 
-                mQueryDoneCV.block();
-                mQueryDoneCV.close();
-
+                Log.v(TAG, "Forwarding done got back " + message);
                 MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
-                cursor.addRow(new String[]{mResult.getKey(), mResult.getValue()});
+                cursor.addRow(new String[]{message.getKey(), message.getValue()});
                 return cursor;
             } else {
-                querySuccessors(selection);
-                return mCursor;
+                return querySuccessors(selection);
             }
         }
 	}
@@ -303,13 +314,15 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
     }
 
-    public synchronized String[] queryLocal(String key) {
+    public String[] queryLocal(String key) {
+        Log.v(TAG, "queryLocal " + key);
         // get the local value
         int version;
         String value = "";
         try (BufferedReader br = new BufferedReader(new InputStreamReader(getContext().openFileInput(key)))) {
             value = br.readLine();
             version = Integer.parseInt(br.readLine());
+            Log.v(TAG, "queryLocal " + key + " value " + value + " version " + version);
         } catch (IOException ioe) {
             Log.v(TAG, "queryLocal local key - " + key + " not found");
             return null;
@@ -319,26 +332,40 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     private Cursor queryAll() {
-        Message message = new Message(Message.Type.READ_ALL, "*", null, 0);
-        mQueryDoneCV.close();
-        new QueryAllTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
-        mQueryDoneCV.block();
-        mQueryDoneCV.close();
-        return mCursor;
+        Log.v(TAG, "queryAll");
+        Message message = new Message(Message.Type.READ_ALL, "*", null, 0, mPort);
+        try {
+            new QueryAllTask().executeOnExecutor(mExecutor, message).get();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
+        MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
+        for (Map.Entry<String, String> entry : message.getResult()) {
+            cursor.addRow(new String[] {entry.getKey(), entry.getValue()});
+        }
+        return cursor;
     }
 
-    private void querySuccessors(String key){
+    private Cursor querySuccessors(String key){
+        MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
         String[] result = queryLocal(key);
         if (result != null) {
-            Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
-            mQueryDoneCV.close();
-            new QueryTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
-            mQueryDoneCV.block();
-            mQueryDoneCV.close();
+            Log.v(TAG, "querySuccessors: local key " + key + " value " + result[0] + " version " + result[1]);
+            Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]), mPort);
+            try {
+                new QueryTask().executeOnExecutor(mExecutor, message).get();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
+            cursor.addRow(new String[]{message.getKey(), message.getValue()});
         } else {
             Log.v(TAG, "querySuccessors: key " + key + " not found");
-            mCursor = new MatrixCursor(COLUMN_NAMES);
         }
+        return cursor;
     }
 
 	@Override
@@ -357,7 +384,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(Message... msgs) {
             Message message = msgs[0];
 
-            try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), coOrdPort);
+            try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), message.getmPort());
                  BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
                  BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()))
             ){
@@ -365,7 +392,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String msgToSend = message.toString();
                 bw.write(msgToSend + "\n");
                 bw.flush();
-                Log.v(TAG, "forwarded " + msgToSend + " to " + coOrdPort);
+                Log.v(TAG, "forwarded " + msgToSend + " to " + message.getmPort());
 
                 // TODO : if the coordinator does not ACK, then send it to the node after that
                 //mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(coOrdPort/2)));
@@ -373,12 +400,10 @@ public class SimpleDynamoProvider extends ContentProvider {
                 String line = br.readLine();
                 Log.v(TAG, "ForwardTask received " + line);
                 if (line != null && line.length() > 1) {
-                    mResult = new Message(line);
+                    Message msg = new Message(line);
+                    message.setKey(msg.getKey());
+                    message.setValue(msg.getValue());
                 }
-
-                // notify the main thread
-                mQueryDoneCV.open();
-                Log.v(TAG, "notified the main thread");
 
             } catch (IOException ioe) {
                 Log.e(TAG, "Error forwarding");
@@ -493,24 +518,18 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                     String recvLine = br.readLine();
                     Log.v(TAG, "message received " + recvLine);
-                    Message recvMsg = new Message(recvLine);
-                    if (recvMsg.getVersion() > message.getVersion()) {
-                        message.setValue(recvMsg.getValue());
-                        message.setVersion(recvMsg.getVersion());
+                    if (recvLine != null && recvLine.length() > 0) {
+                        Message recvMsg = new Message(recvLine);
+                        if (recvMsg.getVersion() > message.getVersion()) {
+                            message.setValue(recvMsg.getValue());
+                            message.setVersion(recvMsg.getVersion());
+                        }
                     }
                 } catch (IOException ioe) {
                     Log.e(TAG, "Error sending message to " + port);
                     ioe.printStackTrace();
                 }
             }
-
-            MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
-            cursor.addRow(new String[]{message.getKey(), message.getValue()});
-            mCursor = cursor;
-
-            // notify the main thread
-            mQueryDoneCV.open();
-            Log.v(TAG, "notified the main thread");
 
             return null;
         }
@@ -544,20 +563,22 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                         String line = br.readLine();
                         Log.v(TAG, "QueryAllTask response " + line + " from " + port);
-                        Message respMsg = new Message(line);
+                        if(line != null && line.length() > 0) {
+                            Message respMsg = new Message(line);
 
-                        for (Map.Entry<String, String> entry : respMsg.getResult()) {
-                            String key = entry.getKey();
-                            int version = Integer.parseInt(entry.getValue().split(",")[1]);
+                            for (Map.Entry<String, String> entry : respMsg.getResult()) {
+                                String key = entry.getKey();
+                                int version = Integer.parseInt(entry.getValue().split(",")[1]);
 
-                            String existingVal = result.get(key);
-                            if (existingVal != null) {
-                                int existingVer = Integer.parseInt(existingVal.substring(existingVal.indexOf(',') + 1));
-                                if (existingVer < version) {
+                                String existingVal = result.get(key);
+                                if (existingVal != null) {
+                                    int existingVer = Integer.parseInt(existingVal.substring(existingVal.indexOf(',') + 1));
+                                    if (existingVer < version) {
+                                        result.put(key, entry.getValue());
+                                    }
+                                } else {
                                     result.put(key, entry.getValue());
                                 }
-                            } else {
-                                result.put(key, entry.getValue());
                             }
                         }
                     } catch (IOException ioe) {
@@ -567,15 +588,11 @@ public class SimpleDynamoProvider extends ContentProvider {
                 }
             }
 
-            MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
+            List<Map.Entry<String, String>> output = new ArrayList<>(result.size());
             for (Map.Entry<String, String> entry : result.entrySet()) {
-                cursor.addRow(new String[]{entry.getKey(), entry.getValue().substring(0, entry.getValue().indexOf(","))});
+                output.add(new AbstractMap.SimpleEntry<String, String>(entry.getKey(), entry.getValue().substring(0, entry.getValue().indexOf(","))));
             }
-            mCursor = cursor;
-
-            // notify the main thread
-            mQueryDoneCV.open();
-            Log.v(TAG, "notified the main thread");
+            message.setResult(output);
 
             return null;
         }
