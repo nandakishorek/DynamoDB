@@ -215,7 +215,10 @@ public class SimpleDynamoProvider extends ContentProvider {
         try (FileInputStream fis = getContext().openFileInput(key);
         BufferedReader br = new BufferedReader(new InputStreamReader(fis))) {
             br.readLine(); // skip value
-            version = Integer.parseInt(br.readLine());
+            String ver = br.readLine();
+            if (ver != null) {
+                version = Integer.parseInt(ver);
+            }
         } catch (FileNotFoundException fnf) {
             // do nothing, first insert
         } catch (IOException ioe) {
