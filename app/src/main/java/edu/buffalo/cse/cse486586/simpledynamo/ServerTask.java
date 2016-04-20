@@ -66,6 +66,9 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
                         case READ:
                             handle_read(msg.getKey(), bw);
                             break;
+                        case READ_ALL:
+                            handle_read_all(bw);
+                            break;
                         default:
                             Log.e(TAG, "invalid message " + msg);
                             break;
@@ -91,15 +94,19 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
 
     private void handle_repl_read(String key, BufferedWriter bw) {
         String[] result = mProvider.queryLocal(key);
-        Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
-        try {
-            String line = message.toString();
-            bw.write(line);
-            bw.write('\n');
-            bw.flush();
-            Log.v(TAG, "handle_repl_read: sent message " + line);
-        } catch (IOException e) {
-            e.printStackTrace();
+        if (result != null) {
+            Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
+            try {
+                String line = message.toString();
+                bw.write(line);
+                bw.write('\n');
+                bw.flush();
+                Log.v(TAG, "handle_repl_read: sent message " + line);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            Log.v(TAG, "handle_repl_read: key " + key + " not found");
         }
     }
 
@@ -114,6 +121,20 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
             bw.write('\n');
             bw.flush();
             Log.v(TAG, "handle_read: sent message " + line);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void handle_read_all(BufferedWriter bw) {
+        Message respMsg = new Message(Message.Type.READ_ALL, "*", null, 0);
+        respMsg.setResult(mProvider.queryAllWithVersion());
+        String line = respMsg.toString();
+        try {
+            bw.write(line);
+            bw.write('\n');
+            bw.flush();
+            Log.v(TAG, "handle_read_all: sent message " + line);
         } catch (IOException e) {
             e.printStackTrace();
         }

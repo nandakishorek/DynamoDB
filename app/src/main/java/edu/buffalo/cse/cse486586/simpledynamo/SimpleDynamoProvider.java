@@ -13,9 +13,12 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Formatter;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 
 import android.content.ContentProvider;
@@ -132,12 +135,16 @@ public class SimpleDynamoProvider extends ContentProvider {
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
         coOrdPort = getCoOrdinator(selection);
 
-        if (coOrdPort == mPort || "@".equals(selection)) {
+        if("@".equals(selection)) {
             deleteLocal(selection);
         } else if ("*".equals(selection)) {
             deleteLocal(selection);
             Message message = new Message(Message.Type.DEL, selection, null, 0);
             new DeleteAllTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+        } else if (coOrdPort == mPort){
+            deleteLocal(selection);
+            Message message = new Message(Message.Type.DEL, selection, null, 0);
+            new DeleteTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
         } else {
             forward(Message.Type.DEL, selection, null, coOrdPort);
         }
@@ -263,6 +270,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 	}
 
     private Cursor queryAllLocal() {
+        // TODO: change to use queryAllWithVersion
         Log.v(TAG, "queryAllLocal");
         MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
         String[] allKeys = getContext().fileList();
@@ -270,6 +278,23 @@ public class SimpleDynamoProvider extends ContentProvider {
             addValueToCursor(k, cursor);
         }
         return cursor;
+    }
+
+    public List<Map.Entry<String, String>> queryAllWithVersion() {
+        // TODO: synchronize?
+        List<Map.Entry<String, String>> result = new ArrayList<Map.Entry<String, String>>();
+        String[] allKeys = getContext().fileList();
+        for (String k : allKeys) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(getContext().openFileInput(k)))) {
+                String value = br.readLine();
+                String version = br.readLine();
+                Map.Entry<String, String> entry = new AbstractMap.SimpleEntry<String, String>(k, value + "," + version);
+                result.add(entry);
+            } catch (IOException ioe) {
+                Log.v(TAG, "query local key - " + k + "not found");
+            }
+        }
+        return result;
     }
 
     private void addValueToCursor(String key, MatrixCursor cursor) {
@@ -290,24 +315,33 @@ public class SimpleDynamoProvider extends ContentProvider {
             version = Integer.parseInt(br.readLine());
         } catch (IOException ioe) {
             Log.v(TAG, "queryLocal local key - " + key + " not found");
+            return null;
         }
 
         return new String[]{value, Integer.toString(version)};
     }
 
     private Cursor queryAll() {
-        // TODO: implement this feature
-        MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
-        return cursor;
+        Message message = new Message(Message.Type.READ_ALL, "*", null, 0);
+        mQueryDoneCV.close();
+        new QueryAllTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+        mQueryDoneCV.block();
+        mQueryDoneCV.close();
+        return mCursor;
     }
 
     private void querySuccessors(String key){
         String[] result = queryLocal(key);
-        Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
-        mQueryDoneCV.close();
-        new QueryTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
-        mQueryDoneCV.block();
-        mQueryDoneCV.close();
+        if (result != null) {
+            Message message = new Message(Message.Type.REPL_READ, key, result[0], Integer.parseInt(result[1]));
+            mQueryDoneCV.close();
+            new QueryTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
+            mQueryDoneCV.block();
+            mQueryDoneCV.close();
+        } else {
+            Log.v(TAG, "querySuccessors: key " + key + " not found");
+            mCursor = new MatrixCursor(COLUMN_NAMES);
+        }
     }
 
 	@Override
@@ -375,6 +409,33 @@ public class SimpleDynamoProvider extends ContentProvider {
                     bw.write(msgToSend + "\n");
                     bw.flush();
                     Log.v(TAG, "replication message sent " + msgToSend + " to " + port);
+                } catch (IOException ioe) {
+                    Log.e(TAG, "Error sending message to " + port);
+                    ioe.printStackTrace();
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /**
+     * AsyncTask to delete the key-val
+     */
+    private class DeleteTask extends AsyncTask<Message, Void, Void> {
+
+        @Override
+        protected Void doInBackground(Message... msgs) {
+            Message message = msgs[0];
+
+            for (int port : preflist) {
+                try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
+                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+                ){
+                    String msgToSend = message.toString();
+                    bw.write(msgToSend + "\n");
+                    bw.flush();
+                    Log.v(TAG, "delete message sent " + msgToSend + " to " + port);
                 } catch (IOException ioe) {
                     Log.e(TAG, "Error sending message to " + port);
                     ioe.printStackTrace();
@@ -467,6 +528,12 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(Message... msgs) {
             Message message = msgs[0];
 
+            Map<String, String> result = new HashMap<String, String>();
+
+            for (Map.Entry<String, String> entry : queryAllWithVersion()) {
+                result.put(entry.getKey(), entry.getValue());
+            }
+
             for (int port : REMOTE_PORTS) {
                 if (port != mPort) {
                     try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
@@ -477,12 +544,43 @@ public class SimpleDynamoProvider extends ContentProvider {
                         bw.write(msgToSend + "\n");
                         bw.flush();
                         Log.v(TAG, "query message sent " + msgToSend);
+
+                        String line = br.readLine();
+                        Log.v(TAG, "QueryAllTask response " + line + " from " + port);
+                        Message respMsg = new Message(line);
+
+                        for (Map.Entry<String, String> entry : respMsg.getResult()) {
+                            String key = entry.getKey();
+                            String[] vals = entry.getValue().split(",");
+                            String value = vals[0];
+                            int version = Integer.parseInt(vals[1]);
+
+                            String existingVal = result.get(key);
+                            if (existingVal != null) {
+                                int existingVer = Integer.parseInt(existingVal.substring(existingVal.indexOf(',') + 1));
+                                if (existingVer < version) {
+                                    result.put(key, entry.getValue());
+                                }
+                            } else {
+                                result.put(key, entry.getValue());
+                            }
+                        }
                     } catch (IOException ioe) {
                         Log.e(TAG, "Error sending message to " + port);
                         ioe.printStackTrace();
                     }
                 }
             }
+
+            MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
+            for (Map.Entry<String, String> entry : result.entrySet()) {
+                cursor.addRow(new String[]{entry.getKey(), entry.getValue().substring(0, entry.getValue().indexOf(","))});
+            }
+            mCursor = cursor;
+
+            // notify the main thread
+            mQueryDoneCV.open();
+            Log.v(TAG, "notified the main thread");
 
             return null;
         }
