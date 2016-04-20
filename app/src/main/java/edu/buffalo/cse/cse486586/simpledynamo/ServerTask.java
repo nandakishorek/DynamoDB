@@ -9,12 +9,10 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
-import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 
 /**
  * Created by kishore on 3/18/16.
@@ -44,7 +42,7 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
             try {
                 Socket clientSocket = serverSocket.accept();
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()));
+                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()))
                 ) {
                     String line = br.readLine();
                     Log.v(TAG, "received message " + line);

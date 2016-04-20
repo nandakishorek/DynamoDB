@@ -11,11 +11,9 @@ import java.io.OutputStreamWriter;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.Formatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -83,18 +81,18 @@ public class SimpleDynamoProvider extends ContentProvider {
         }
 
         // generate the node hashes
-        mNodeMap = new TreeMap<String, Integer>();
-        for (int i = 0; i < REMOTE_PORTS.length; ++i) {
+        mNodeMap = new TreeMap<>();
+        for (int port: REMOTE_PORTS) {
             try {
-                String hash = HashUtility.genHash(Integer.toString(REMOTE_PORTS[i] / 2));
-                mNodeMap.put(hash, REMOTE_PORTS[i]);
+                String hash = HashUtility.genHash(Integer.toString(port / 2));
+                mNodeMap.put(hash, port);
             } catch (NoSuchAlgorithmException e) {
                 Log.e(TAG, "onCreate: SHA-1 not supported");
             }
         }
 
         // generate the preference list
-        preflist = new ArrayList<Integer>();
+        preflist = new ArrayList<>();
         String firstSuccessor = mNodeMap.higherKey(mNodeId);
         if (firstSuccessor == null) {
             firstSuccessor = mNodeMap.firstKey();
@@ -114,8 +112,8 @@ public class SimpleDynamoProvider extends ContentProvider {
     /**
      * Returns the port of the coordinator node responsible for this key
      *
-     * @param key
-     * @return
+     * @param key the key
+     * @return the port of the co-ordinator
      */
     private int getCoOrdinator(String key) {
         try {
@@ -146,7 +144,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             Message message = new Message(Message.Type.DEL, selection, null, 0);
             new DeleteTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
         } else {
-            forward(Message.Type.DEL, selection, null, coOrdPort);
+            forward(Message.Type.DEL, selection, null);
         }
 
 		return 0;
@@ -183,7 +181,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         coOrdPort = getCoOrdinator(key);
         if (coOrdPort != mPort) {
             // send it to the right node
-            forward(Message.Type.WRITE, key, val, coOrdPort);
+            forward(Message.Type.WRITE, key, val);
         } else {
             // store locally
             insertLocal(key, val);
@@ -232,11 +230,10 @@ public class SimpleDynamoProvider extends ContentProvider {
     /**
      * Forward to the right coordinator
      *
-     * @param key
-     * @param val
-     * @param coOrdPort
+     * @param key the key
+     * @param val the value
      */
-    private void forward(Message.Type type, String key, String val, int coOrdPort) {
+    private void forward(Message.Type type, String key, String val) {
         Message message = new Message(type, key, val, 0);
         new ForwardTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, message);
     }
@@ -254,7 +251,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 mQueryDoneCV.close();
 
                 // send it to the right node
-                forward(Message.Type.READ, selection, null, coOrdPort);
+                forward(Message.Type.READ, selection, null);
 
                 mQueryDoneCV.block();
                 mQueryDoneCV.close();
@@ -308,7 +305,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     public synchronized String[] queryLocal(String key) {
         // get the local value
-        int version = 1;
+        int version;
         String value = "";
         try (BufferedReader br = new BufferedReader(new InputStreamReader(getContext().openFileInput(key)))) {
             value = br.readLine();
@@ -347,7 +344,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 	@Override
 	public int update(Uri uri, ContentValues values, String selection,
 			String[] selectionArgs) {
-		// TODO Auto-generated method stub
+        // not used
 		return 0;
 	}
 
@@ -362,7 +359,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
             try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), coOrdPort);
                  BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
-                 BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                 BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()))
             ){
                 // pass the key-val to co-ordinator
                 String msgToSend = message.toString();
@@ -403,7 +400,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
             for (int port : preflist) {
                 try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
-                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()))
                 ){
                     String msgToSend = message.toString();
                     bw.write(msgToSend + "\n");
@@ -430,7 +427,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
             for (int port : preflist) {
                 try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
-                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+                     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()))
                 ){
                     String msgToSend = message.toString();
                     bw.write(msgToSend + "\n");
@@ -458,7 +455,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             for (int port : REMOTE_PORTS) {
                 if (port != mPort) {
                     try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
-                         BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+                         BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()))
                     ) {
                         String msgToSend = message.toString();
                         bw.write(msgToSend + "\n");
@@ -487,7 +484,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             for (int port : preflist) {
                 try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                      BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
-                     BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                     BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()))
                 ){
                     String msgToSend = message.toString();
                     bw.write(msgToSend + "\n");
@@ -528,7 +525,7 @@ public class SimpleDynamoProvider extends ContentProvider {
         protected Void doInBackground(Message... msgs) {
             Message message = msgs[0];
 
-            Map<String, String> result = new HashMap<String, String>();
+            Map<String, String> result = new HashMap<>();
 
             for (Map.Entry<String, String> entry : queryAllWithVersion()) {
                 result.put(entry.getKey(), entry.getValue());
@@ -538,7 +535,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 if (port != mPort) {
                     try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), port);
                          BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
-                         BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                         BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()))
                     ) {
                         String msgToSend = message.toString();
                         bw.write(msgToSend + "\n");
@@ -551,9 +548,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
                         for (Map.Entry<String, String> entry : respMsg.getResult()) {
                             String key = entry.getKey();
-                            String[] vals = entry.getValue().split(",");
-                            String value = vals[0];
-                            int version = Integer.parseInt(vals[1]);
+                            int version = Integer.parseInt(entry.getValue().split(",")[1]);
 
                             String existingVal = result.get(key);
                             if (existingVal != null) {
