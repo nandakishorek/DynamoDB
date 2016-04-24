@@ -59,7 +59,7 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
                                     handle_repl_read(msg.getKey(), bw);
                                     break;
                                 case DEL:
-                                    mProvider.deleteLocal(msg.getKey());
+                                    handle_delete(msg, bw);
                                     break;
                                 case WRITE:
                                     handle_write(msg, bw);
@@ -73,6 +73,9 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
                                 case SUB_WRITE:
                                     // actual co-ordinator is down
                                     handle_sub_write(msg, bw);
+                                    break;
+                                case SUB_DEL:
+                                    handle_sub_del(msg, bw);
                                     break;
                                 default:
                                     Log.e(TAG, "invalid message " + msg);
@@ -171,5 +174,33 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         Log.v(TAG, "handle_sub_write");
         mProvider.insertLocal(msg.getKey(), msg.getValue());
         mProvider.replicateOnce(msg.getKey(), msg.getValue());
+    }
+
+    private void handle_delete(Message msg, BufferedWriter bw) {
+        Log.v(TAG, "handle_delete");
+        mProvider.deleteLocal(msg.getKey());
+        String line = msg.toString();
+        try {
+            bw.write(line);
+            bw.write('\n');
+            bw.flush();
+            Log.v(TAG, "handle_delete: sent message " + line);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void handle_sub_del(Message msg, BufferedWriter bw) {
+        Log.v(TAG, "handle_sub_del");
+        mProvider.deleteFromSuccessor(msg.getKey());
+        String line = msg.toString();
+        try {
+            bw.write(line);
+            bw.write('\n');
+            bw.flush();
+            Log.v(TAG, "handle_sub_del: sent message " + line);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 }

@@ -164,9 +164,28 @@ public class SimpleDynamoProvider extends ContentProvider {
             Message message = new Message(Message.Type.DEL, selection, null, 0, coOrdPort);
             new DeleteTask().executeOnExecutor(mExecutor, message);
         } else {
-            Message message = new Message(Message.Type.DEL, selection, null, 0, mPort);
+            Message message = new Message(Message.Type.DEL, selection, null, 0, coOrdPort);
             try {
                 new ForwardTask().executeOnExecutor(mExecutor, message).get();
+
+                if (message.getKey() == null) {
+                    // coordinator did not ACK, then send it to the node after that
+                    try {
+                        Map.Entry<String, Integer> firstSuccessor = mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(coOrdPort/2)));
+                        if (firstSuccessor == null) {
+                            firstSuccessor = mNodeMap.firstEntry();
+                        }
+
+                        message.setType(Message.Type.SUB_DEL);
+                        message.setKey(selection);
+                        message.setmPort(firstSuccessor.getValue());
+
+                        Log.v(TAG, "Forwarding to first successor of coordinator " + firstSuccessor.getValue());
+                        new ForwardTask().executeOnExecutor(mExecutor, message).get();
+                    } catch (NoSuchAlgorithmException e) {
+                        Log.e(TAG, "onCreate: SHA-1 not supported");
+                    }
+                }
             } catch (InterruptedException e) {
                 e.printStackTrace();
             } catch (ExecutionException e) {
@@ -194,6 +213,18 @@ public class SimpleDynamoProvider extends ContentProvider {
         return 0;
     }
 
+    public void deleteFromSuccessor(String key) {
+        Log.v(TAG, "deleteFromSuccessor " + key);
+        Message message = new Message(Message.Type.DEL, key, null, 0, preflist.get(0));
+        try {
+            new ForwardTask().executeOnExecutor(mExecutor, message).get();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
+    }
+
 	@Override
 	public String getType(Uri uri) {
 		// TODO Auto-generated method stub
@@ -215,7 +246,7 @@ public class SimpleDynamoProvider extends ContentProvider {
                 if (message.getKey() == null) {
                     // coordinator did not ACK, then send it to the node after that
                     try {
-                        Map.Entry<String, Integer> firstSuccessor = mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(message.getmPort()/2)));
+                        Map.Entry<String, Integer> firstSuccessor = mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(coOrdPort/2)));
                         if (firstSuccessor == null) {
                             firstSuccessor = mNodeMap.firstEntry();
                         }
