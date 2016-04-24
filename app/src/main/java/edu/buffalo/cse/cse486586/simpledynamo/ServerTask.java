@@ -62,13 +62,17 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
                                     mProvider.deleteLocal(msg.getKey());
                                     break;
                                 case WRITE:
-                                    mStore.insert(msg.getKey(), msg.getValue());
+                                    handle_write(msg, bw);
                                     break;
                                 case READ:
                                     handle_read(msg.getKey(), bw);
                                     break;
                                 case READ_ALL:
                                     handle_read_all(bw);
+                                    break;
+                                case SUB_WRITE:
+                                    // actual co-ordinator is down
+                                    handle_sub_write(msg, bw);
                                     break;
                                 default:
                                     Log.e(TAG, "invalid message " + msg);
@@ -93,6 +97,22 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         }
 
         return null;
+    }
+
+    private void handle_write(Message message, BufferedWriter bw) {
+        Log.v(TAG, "handle_write");
+        mStore.insert(message.getKey(), message.getValue());
+
+        // send ACK
+        try {
+            String line = message.toString();
+            bw.write(line);
+            bw.write('\n');
+            bw.flush();
+            Log.v(TAG, "handle_write: sent message " + line);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private void handle_repl_read(String key, BufferedWriter bw) {
@@ -145,5 +165,11 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private void handle_sub_write(Message msg, BufferedWriter bw) {
+        Log.v(TAG, "handle_sub_write");
+        mProvider.insertLocal(msg.getKey(), msg.getValue());
+        mProvider.replicateOnce(msg.getKey(), msg.getValue());
     }
 }

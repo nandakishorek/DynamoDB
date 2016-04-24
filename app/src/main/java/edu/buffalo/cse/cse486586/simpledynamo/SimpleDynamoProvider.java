@@ -51,7 +51,8 @@ public class SimpleDynamoProvider extends ContentProvider {
 	private int mPort; // the port of this node
 	private String mNodeId; // hash of the emulator port, ex. hash("5554");
 	private ServerTask mServerTask;
-    private List<Integer> preflist;
+    private List<Integer> preflist; // preference list for replication
+    private List<Integer> prevNodes;
 
     Executor mExecutor = Executors.newFixedThreadPool(20);
 
@@ -106,6 +107,24 @@ public class SimpleDynamoProvider extends ContentProvider {
             second = mNodeMap.firstKey();
         }
         preflist.add(mNodeMap.get(second));
+
+        // sync from successor and predecessor
+        String predecessor = mNodeMap.lowerKey(mNodeId);
+        if (predecessor == null) {
+            predecessor = mNodeMap.lastKey();
+        }
+
+        // get the previous two nodes
+        prevNodes = new ArrayList<>();
+        prevNodes.add(mNodeMap.get(predecessor));
+        String predToPred = mNodeMap.lowerKey(predecessor);
+        if (predToPred == null) {
+            predToPred = mNodeMap.lastKey();
+        }
+        prevNodes.add(mNodeMap.get(predToPred));
+
+        Log.v(TAG, "Previous nodes " + prevNodes.toString());
+        sync(mNodeMap.get(firstSuccessor), mNodeMap.get(predecessor));
 
         return true;
     }
@@ -192,6 +211,25 @@ public class SimpleDynamoProvider extends ContentProvider {
             Message message = new Message(Message.Type.WRITE, key, val, 0, coOrdPort);
             try {
                 new ForwardTask().executeOnExecutor(mExecutor, message).get();
+
+                if (message.getKey() == null) {
+                    // coordinator did not ACK, then send it to the node after that
+                    try {
+                        Map.Entry<String, Integer> firstSuccessor = mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(message.getmPort()/2)));
+                        if (firstSuccessor == null) {
+                            firstSuccessor = mNodeMap.firstEntry();
+                        }
+
+                        message.setType(Message.Type.SUB_WRITE);
+                        message.setKey(key);
+                        message.setmPort(firstSuccessor.getValue());
+
+                        Log.v(TAG, "Forwarding to first successor of coordinator " + firstSuccessor.getValue());
+                        new ForwardTask().executeOnExecutor(mExecutor, message).get();
+                    } catch (NoSuchAlgorithmException e) {
+                        Log.e(TAG, "onCreate: SHA-1 not supported");
+                    }
+                }
             } catch (InterruptedException e) {
                 e.printStackTrace();
             } catch (ExecutionException e) {
@@ -240,10 +278,28 @@ public class SimpleDynamoProvider extends ContentProvider {
         Log.v(TAG, "insert local key: " + key + " value: " + val + " version: " +version);
     }
 
-    private void replicate(String key, String val) {
+    public void replicate(String key, String val) {
         Message message = new Message(Message.Type.REPL_WRITE, key, val, 0, mPort);
         try {
             new ReplicationTask().executeOnExecutor(mExecutor, message).get();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Replicate SUB_WRITE
+     *
+     * @param key
+     * @param val
+     */
+    public void replicateOnce(String key, String val) {
+        Log.v(TAG, "replicateOnce successor: " + preflist.get(0));
+        Message message = new Message(Message.Type.REPL_WRITE, key, val, 0, preflist.get(0));
+        try {
+            new ForwardTask().executeOnExecutor(mExecutor, message).get();
         } catch (InterruptedException e) {
             e.printStackTrace();
         } catch (ExecutionException e) {
@@ -274,6 +330,35 @@ public class SimpleDynamoProvider extends ContentProvider {
                 }
 
                 Log.v(TAG, "Forwarding done got back " + message);
+
+                if (message.getKey() == null) {
+                    // co-ordinator is down
+                    // read from the successor of the co-ordinator
+                    message.setKey(selection);
+                    message.setType(Message.Type.REPL_READ);
+
+                    try {
+                        String coOrdHash = HashUtility.genHash(Integer.toString(coOrdPort / 2));
+                        String successor = mNodeMap.higherKey(coOrdHash);
+                        if (successor == null) {
+                            successor = mNodeMap.firstKey();
+                        }
+                        int successorPort = mNodeMap.get(successor);
+                        message.setmPort(successorPort);
+
+                        Log.v(TAG, "Co-ordinator " + coOrdPort + " is down. Reading from  " + successorPort);
+                        try {
+                            new ForwardTask().executeOnExecutor(mExecutor, message).get();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        } catch (ExecutionException e) {
+                            e.printStackTrace();
+                        }
+                    } catch (NoSuchAlgorithmException e) {
+                        Log.e(TAG, "onCreate: SHA-1 not supported");
+                    }
+                }
+
                 MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
                 cursor.addRow(new String[]{message.getKey(), message.getValue()});
                 return cursor;
@@ -295,7 +380,6 @@ public class SimpleDynamoProvider extends ContentProvider {
     }
 
     public List<Map.Entry<String, String>> queryAllWithVersion() {
-        // TODO: synchronize?
         List<Map.Entry<String, String>> result = new ArrayList<Map.Entry<String, String>>();
         String[] allKeys = getContext().fileList();
         for (String k : allKeys) {
@@ -354,6 +438,24 @@ public class SimpleDynamoProvider extends ContentProvider {
         return cursor;
     }
 
+    private void sync(int successorPort, int predPort) {
+        Log.v(TAG, "sync");
+        //deleteLocal("*");
+        Message message1 = new Message(Message.Type.READ_ALL, "*", null, 0, successorPort);
+        Message message2 = new Message(Message.Type.READ_ALL, "*", null, 0, predPort);
+        try {
+            new SyncTask().executeOnExecutor(mExecutor, message1, message2).get();
+
+            for (Map.Entry<String, String> entry : message1.getResult()) {
+                insertLocal(entry.getKey(), entry.getValue());
+            }
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (ExecutionException e) {
+            e.printStackTrace();
+        }
+    }
+
     private Cursor querySuccessors(String key){
         MatrixCursor cursor = new MatrixCursor(COLUMN_NAMES);
         String[] result = queryLocal(key);
@@ -400,17 +502,15 @@ public class SimpleDynamoProvider extends ContentProvider {
                 bw.flush();
                 Log.v(TAG, "forwarded " + msgToSend + " to " + message.getmPort());
 
-                // TODO : if the coordinator does not ACK, then send it to the node after that
-                //mNodeMap.higherEntry(HashUtility.genHash(Integer.toString(coOrdPort/2)));
-
-                if (message.getType() == Message.Type.READ) {
-                    String line = br.readLine();
-                    Log.v(TAG, "ForwardTask received " + line);
-                    if (line != null && line.length() > 1) {
-                        Message msg = new Message(line);
-                        message.setKey(msg.getKey());
-                        message.setValue(msg.getValue());
-                    }
+                String line = br.readLine();
+                Log.v(TAG, "ForwardTask received " + line);
+                if (line != null && line.length() > 1) {
+                    Message msg = new Message(line);
+                    message.setKey(msg.getKey());
+                    message.setValue(msg.getValue());
+                } else {
+                    // notify main thread of co-ordinator ACK failure
+                    message.setKey(null);
                 }
             } catch (IOException ioe) {
                 Log.e(TAG, "Error forwarding");
@@ -600,6 +700,73 @@ public class SimpleDynamoProvider extends ContentProvider {
                 output.add(new AbstractMap.SimpleEntry<String, String>(entry.getKey(), entry.getValue().substring(0, entry.getValue().indexOf(","))));
             }
             message.setResult(output);
+
+            return null;
+        }
+    }
+
+    /**
+     * AsyncTask to sync from successor
+     */
+    private class SyncTask extends AsyncTask<Message, Void, Void> {
+
+        @Override
+        protected Void doInBackground(Message... msgs) {
+
+            Map<String, String> result = new HashMap<>();
+
+            for (Map.Entry<String, String> entry : queryAllWithVersion()) {
+                result.put(entry.getKey(), entry.getValue());
+            }
+
+            for (Message message : msgs) {
+                try (Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), message.getmPort());
+                    BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+                    BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()))
+                ) {
+                    String msgToSend = message.toString();
+                    bw.write(msgToSend + "\n");
+                    bw.flush();
+                    Log.v(TAG, "sync message sent " + msgToSend);
+
+                    String line = br.readLine();
+                    Log.v(TAG, "SyncTask response " + line + " from " + message.getmPort());
+                    if(line != null && line.length() > 0) {
+                        Message respMsg = new Message(line);
+
+                        for (Map.Entry<String, String> entry : respMsg.getResult()) {
+                            String key = entry.getKey();
+                            int version = Integer.parseInt(entry.getValue().split(",")[1]);
+
+                            // store, only if the key is replicated in this partition or belongs to partition
+                            int partition = getCoOrdinator(key);
+                            if (partition == mPort || prevNodes.contains(partition)) {
+                                String existingVal = result.get(key);
+                                if (existingVal != null) {
+                                    int existingVer = Integer.parseInt(existingVal.substring(existingVal.indexOf(',') + 1));
+                                    if (existingVer < version) {
+                                        result.put(key, entry.getValue());
+                                    }
+                                } else {
+                                    result.put(key, entry.getValue());
+                                }
+                            } else {
+                                Log.v(TAG, "dropped key " + key + " from " + message.getmPort() + ", belongs to " + partition);
+                            }
+                        }
+                    }
+                } catch (IOException ioe) {
+                    Log.e(TAG, "Error sending message to " + message.getmPort());
+                    ioe.printStackTrace();
+                }
+            }
+
+            List<Map.Entry<String, String>> output = new ArrayList<>(result.size());
+            for (Map.Entry<String, String> entry : result.entrySet()) {
+                output.add(new AbstractMap.SimpleEntry<>(entry.getKey(), entry.getValue().substring(0, entry.getValue().indexOf(","))));
+            }
+
+            msgs[0].setResult(output);
 
             return null;
         }

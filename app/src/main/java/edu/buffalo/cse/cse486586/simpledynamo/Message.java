@@ -13,7 +13,7 @@ public class Message {
     private static final String TAG = Message.class.getSimpleName();
     private static final String DELIM = "|";
 
-    public enum Type {READ, WRITE, REPL_READ, REPL_WRITE, SYNC, DEL, READ_ALL};
+    public enum Type {READ, WRITE, REPL_READ, REPL_WRITE, DEL, READ_ALL, SUB_WRITE};
 
     private Type type;
     private String key; // query key
