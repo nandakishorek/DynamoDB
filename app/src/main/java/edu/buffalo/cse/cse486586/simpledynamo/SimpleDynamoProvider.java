@@ -471,7 +471,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     private void sync(int successorPort, int predPort) {
         Log.v(TAG, "sync");
-        //deleteLocal("*");
+        deleteLocal("*");
         Message message1 = new Message(Message.Type.READ_ALL, "*", null, 0, successorPort);
         Message message2 = new Message(Message.Type.READ_ALL, "*", null, 0, predPort);
         try {

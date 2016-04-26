@@ -49,37 +49,39 @@ public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
                         ) {
                             String line = br.readLine();
                             Log.v(TAG, "received message " + line);
-                            Message msg = new Message(line);
+                            if (line != null && line.length() > 1) {
+                                Message msg = new Message(line);
 
-                            switch (msg.getType()) {
-                                case REPL_WRITE:
-                                    mProvider.insertLocal(msg.getKey(), msg.getValue());
-                                    break;
-                                case REPL_READ:
-                                    handle_repl_read(msg.getKey(), bw);
-                                    break;
-                                case DEL:
-                                    handle_delete(msg, bw);
-                                    break;
-                                case WRITE:
-                                    handle_write(msg, bw);
-                                    break;
-                                case READ:
-                                    handle_read(msg.getKey(), bw);
-                                    break;
-                                case READ_ALL:
-                                    handle_read_all(bw);
-                                    break;
-                                case SUB_WRITE:
-                                    // actual co-ordinator is down
-                                    handle_sub_write(msg, bw);
-                                    break;
-                                case SUB_DEL:
-                                    handle_sub_del(msg, bw);
-                                    break;
-                                default:
-                                    Log.e(TAG, "invalid message " + msg);
-                                    break;
+                                switch (msg.getType()) {
+                                    case REPL_WRITE:
+                                        mProvider.insertLocal(msg.getKey(), msg.getValue());
+                                        break;
+                                    case REPL_READ:
+                                        handle_repl_read(msg.getKey(), bw);
+                                        break;
+                                    case DEL:
+                                        handle_delete(msg, bw);
+                                        break;
+                                    case WRITE:
+                                        handle_write(msg, bw);
+                                        break;
+                                    case READ:
+                                        handle_read(msg.getKey(), bw);
+                                        break;
+                                    case READ_ALL:
+                                        handle_read_all(bw);
+                                        break;
+                                    case SUB_WRITE:
+                                        // actual co-ordinator is down
+                                        handle_sub_write(msg, bw);
+                                        break;
+                                    case SUB_DEL:
+                                        handle_sub_del(msg, bw);
+                                        break;
+                                    default:
+                                        Log.e(TAG, "invalid message " + msg);
+                                        break;
+                                }
                             }
                         } catch (IOException ioe) {
                             Log.e(TAG, "Error writing or reading to client socket");
